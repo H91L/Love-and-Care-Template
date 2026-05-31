@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>3D 粒子手势交互</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#000;overflow:hidden;font-family:'Microsoft YaHei',sans-serif;user-select:none}
+  #video{position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;pointer-events:none}
+  #loading{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:#fff;font-size:20px;z-index:100;text-align:center}
+  #loading .spinner{width:44px;height:44px;border:3px solid rgba(255,255,255,.2);border-top-color:#ff4081;border-radius:50%;animation:spin .8s linear infinite;margin:0 auto 14px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  #panel{position:fixed;bottom:28px;left:50%;transform:translateX(-50%);z-index:50;background:rgba(16,16,28,.88);border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:14px 22px;display:flex;gap:18px;align-items:center;flex-wrap:wrap;justify-content:center;backdrop-filter:blur(10px)}
+  #panel label{color:#999;font-size:11px;display:block;margin-bottom:3px}
+  #panel select,#panel input[type=range]{background:#222;color:#fff;border:1px solid rgba(255,255,255,.2);border-radius:7px;padding:5px 9px;font-size:12px;cursor:pointer}
+  #panel input[type=color]{width:32px;height:28px;border:none;border-radius:5px;cursor:pointer;background:transparent}
+  #panel .btn{padding:7px 14px;border-radius:7px;border:none;cursor:pointer;font-size:12px;background:#ff4081;color:#fff}
+  #panel .btn:hover{opacity:.85}
+  #hint{position:fixed;top:18px;left:50%;transform:translateX(-50%);color:rgba(255,255,255,.65);font-size:13px;text-align:center;pointer-events:none;z-index:50}
+  #hint .icon{font-size:34px;display:block}
+</style>
+</head>
+<body>
+<div id="loading"><div class="spinner"></div>加载手势模型...</div>
+<video id="video" autoplay playsinline></video>
+<div id="hint"><span class="icon">🖐️</span>张开手掌 · 握拳聚心 · 比耶显字</div>
+<div id="panel">
+  <div><label>形状</label><select id="shapeSel"><option value="auto">🤖 手势控制</option><option value="scatter">💨 散开</option><option value="heart">❤️ 爱心</option><option value="text">📝 早安</option></select></div>
+  <div><label>颜色</label><input type="color" id="colorPick" value="#ff4081"></div>
+  <div><label>粒子 <span id="cntLab">3000</span></label><input type="range" id="cntRng" min="800" max="6000" value="3000" step="200"></div>
+  <button class="btn" id="resetBtn">重置</button>
+</div>
+
+<!-- Three.js UMD -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<!-- MediaPipe Hands -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/hands.js" crossorigin="anonymous"></script>
+
+<script>
+// ==================== DOM ====================
+const video = document.getElementById('video');
+const loading = document.getElementById('loading');
+const hintEl = document.getElementById('hint');
+const shapeSel = document.getElementById('shapeSel');
+const colorPick = document.getElementById('colorPick');
+const cntRng = document.getElementById('cntRng');
+const cntLab = document.getElementById('cntLab');
+
+// ==================== Three.js ====================
+const W = () => window.innerWidth, H = () => window.innerHeight;
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, W()/H(), 1, 100);
+camera.position.z = 35;
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setSize(W(), H());
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+document.body.appendChild(renderer.domElement);
+
+function glowTex(color) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, color); g.addColorStop(0.15, color);
+  g.addColorStop(0.5, color + '88'); g.addColorStop(1, 'transparent');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+}
+
+let pColor = colorPick.value;
+let mat = new THREE.PointsMaterial({
+  size: 0.45, map: glowTex(pColor), blending: THREE.AdditiveBlending,
+  depthWrite: false, transparent: true,
+});
+mat.color.set(pColor);
+
+let N = 3000;
+let pos = new Float32Array(N * 3);
+let col = new Float32Array(N * 3);
+let vel = new Float32Array(N * 3);
+const geo = new THREE.BufferGeometry();
+geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+const pts = new THREE.Points(geo, mat);
+scene.add(pts);
+
+// ==================== 形状数据 ====================
+let heartPts = [], scatterPts = [], textPts = [];
+
+function buildShapes(n) {
+  heartPts = []; scatterPts = []; textPts = [];
+  for (let i = 0; i < n; i++) {
+    const t = (i / n) * Math.PI * 2;
+    const hx = 16*Math.pow(Math.sin(t),3);
+    const hy = 13*Math.cos(t)-5*Math.cos(2*t)-2*Math.cos(3*t)-Math.cos(4*t);
+    heartPts.push([hx*1.76, hy*1.76, (Math.random()-.5)*2]);
+    const r = 16 * Math.pow(Math.random(), .5);
+    const th = Math.random()*Math.PI*2, ph = Math.acos(2*Math.random()-1);
+    scatterPts.push([r*Math.sin(ph)*Math.cos(th), r*Math.sin(ph)*Math.sin(th), r*Math.cos(ph)]);
+  }
+  // 文字采样
+  const cv = document.createElement('canvas');
+  cv.width = 512; cv.height = 256;
+  const cx = cv.getContext('2d');
+  cx.fillStyle = '#000'; cx.fillRect(0,0,512,256);
+  cx.fillStyle = '#fff';
+  cx.font = 'bold 160px "KaiTi","楷体","Microsoft YaHei",sans-serif';
+  cx.textAlign = 'center'; cx.textBaseline = 'middle';
+  cx.fillText('早安', 256, 128);
+  const img = cx.getImageData(0,0,512,256);
+  const white = [];
+  for (let y=0; y<256; y++) for (let x=0; x<512; x++) {
+    if (img.data[(y*512+x)*4] > 128) white.push([x,y]);
+  }
+  for (let i=0; i<n; i++) {
+    const [px,py] = white[Math.floor(Math.random()*white.length)];
+    textPts.push([(px-256)*0.039, -(py-128)*0.039, (Math.random()-.5)*1.5]);
+  }
+}
+buildShapes(N);
+
+function shapePt(i, shape) {
+  const arr = shape === 'heart' ? heartPts : shape === 'text' ? textPts : scatterPts;
+  return arr[i % arr.length];
+}
+
+// ==================== 手势 ====================
+let curGesture = 'open';
+let stableGesture = 'open';
+let stableCnt = 0;
+
+function classify(lm) {
+  // MediaPipe Hands: 21 landmarks, indices: wrist=0, thumbTip=4, indexTip=8, middleTip=12, ringTip=16, pinkyTip=20
+  const tips = [4,8,12,16,20];
+  const mcp = [2,5,9,13,17];
+  const wrist = lm[0];
+  const ext = tips.map((t,i) => {
+    const dTip = Math.hypot(lm[t].x-wrist.x, lm[t].y-wrist.y, lm[t].z-wrist.z);
+    const dMcp = Math.hypot(lm[mcp[i]].x-wrist.x, lm[mcp[i]].y-wrist.y, lm[mcp[i]].z-wrist.z);
+    return dTip > dMcp * 1.15;
+  });
+  const n = ext.filter(Boolean).length;
+  if (ext[1] && ext[2] && !ext[3] && !ext[4]) return 'peace';
+  if (n <= 1) return 'fist';
+  if (n >= 4) return 'open';
+  return 'none';
+}
+
+// MediaPipe Hands 回调
+function onHandResults(results) {
+  if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+    const g = classify(results.multiHandLandmarks[0]);
+    if (g === stableGesture) {
+      stableCnt++;
+      if (stableCnt >= 6 && g !== 'none') curGesture = g;
+    } else {
+      stableGesture = g; stableCnt = 0;
+    }
+  }
+}
+
+// 初始化 MediaPipe Hands
+const hands = new Hands({
+  locateFile: (f) => 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/' + f
+});
+hands.setOptions({
+  maxNumHands: 1,
+  modelComplexity: 1,
+  minDetectionConfidence: 0.7,
+  minTrackingConfidence: 0.5,
+});
+hands.onResults(onHandResults);
+
+// ==================== 摄像头（限流 8fps 防锁死） ====================
+let camStream = null, camOK = false, lastSend = 0;
+const SEND_MS = 120;
+
+async function tryCamera() {
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 640, height: 480 }
+    });
+    video.srcObject = camStream;
+    await video.play();
+    camOK = true;
+    detectLoop();
+  } catch (e) {
+    console.warn('摄像头不可用:', e.message);
+    fallbackToManual();
+  }
+}
+
+function detectLoop() {
+  if (!camOK) return;
+  requestAnimationFrame(detectLoop);
+  const now = performance.now();
+  if (now - lastSend < SEND_MS) return;
+  if (video.readyState < 2) return;
+  lastSend = now;
+  hands.send({ image: video }).catch(() => {});
+}
+
+function fallbackToManual() {
+  hintEl.innerHTML = '<span class="icon">🖱️</span>左键=爱心 · 右键=早安 · 松开=散开<br><small style="font-size:11px;color:#888">键盘 1=散开 2=爱心 3=早安</small>';
+  loading.style.display = 'none';
+}
+
+hands.initialize().then(tryCamera).catch(e => {
+  console.warn('模型加载失败:', e);
+  fallbackToManual();
+});
+
+// ==================== 鼠标/触屏/键盘 ====================
+let mouseGesture = 'open';
+window.addEventListener('mousedown', e => {
+  e.preventDefault();
+  mouseGesture = e.button === 2 ? 'peace' : 'fist';
+});
+window.addEventListener('mouseup', () => { mouseGesture = 'open'; });
+window.addEventListener('contextmenu', e => e.preventDefault());
+
+window.addEventListener('touchstart', e => {
+  e.preventDefault();
+  mouseGesture = e.touches.length >= 2 ? 'peace' : 'fist';
+}, { passive: false });
+window.addEventListener('touchend', () => { mouseGesture = 'open'; });
+
+window.addEventListener('keydown', e => {
+  if (e.key === '1') { mouseGesture = 'open'; shapeSel.value = 'scatter'; }
+  if (e.key === '2') { mouseGesture = 'fist'; shapeSel.value = 'heart'; }
+  if (e.key === '3') { mouseGesture = 'peace'; shapeSel.value = 'text'; }
+  if (e.key === '0') { mouseGesture = 'open'; shapeSel.value = 'auto'; }
+});
+
+// ==================== 动画 ====================
+let curShape = 'scatter', tgtShape = 'scatter';
+let trans = 0;
+
+function animate(time) {
+  requestAnimationFrame(animate);
+
+  if (shapeSel.value === 'auto') {
+    // 摄像头优先，否则用鼠标/键盘
+    const g = camOK ? curGesture : mouseGesture;
+    if (g === 'fist' || g === 'heart') tgtShape = 'heart';
+    else if (g === 'peace') tgtShape = 'text';
+    else tgtShape = 'scatter';
+  } else {
+    tgtShape = shapeSel.value;
+  }
+
+  if (tgtShape !== curShape) {
+    trans += 0.04;
+    if (trans >= 1) { trans = 0; curShape = tgtShape; }
+  }
+
+  for (let i = 0; i < N; i++) {
+    const i3 = i * 3;
+    let tx, ty, tz;
+    if (trans > 0 && trans < 1) {
+      const a = shapePt(i, curShape), b = shapePt(i, tgtShape);
+      tx = a[0] + (b[0]-a[0])*trans;
+      ty = a[1] + (b[1]-a[1])*trans;
+      tz = a[2] + (b[2]-a[2])*trans;
+    } else {
+      const p = shapePt(i, curShape);
+      tx = p[0]; ty = p[1]; tz = p[2];
+    }
+
+    if (curShape === 'scatter' && trans === 0) {
+      const ts = time * 0.0005;
+      vel[i3] += Math.sin(ts + i*.01)*.003;
+      vel[i3+1] += Math.cos(ts + i*.013)*.003;
+      vel[i3+2] += Math.sin(ts + i*.017)*.003;
+      vel[i3]*=.995; vel[i3+1]*=.995; vel[i3+2]*=.995;
+      tx += vel[i3]; ty += vel[i3+1]; tz += vel[i3+2];
+    }
+
+    pos[i3] += (tx - pos[i3]) * .08;
+    pos[i3+1] += (ty - pos[i3+1]) * .08;
+    pos[i3+2] += (tz - pos[i3+2]) * .08;
+
+    const d = Math.hypot(pos[i3], pos[i3+1], pos[i3+2]);
+    const b = .35 + .65 * (1 - Math.min(d/18, 1));
+    const hx = new THREE.Color(pColor);
+    col[i3]=hx.r*b; col[i3+1]=hx.g*b; col[i3+2]=hx.b*b;
+  }
+  geo.attributes.position.needsUpdate = true;
+  geo.attributes.color.needsUpdate = true;
+
+  pts.rotation.y += .002;
+  pts.rotation.x = Math.sin(time*.0003)*.1;
+
+  if (shapeSel.value === 'auto') {
+    if (camOK) {
+      if (curGesture==='fist') hintEl.innerHTML='<span class="icon">✊</span>握拳 · 爱心 ❤️';
+      else if (curGesture==='peace') hintEl.innerHTML='<span class="icon">✌️</span>比耶 · 早安 📝';
+      else hintEl.innerHTML='<span class="icon">🖐️</span>张开手掌 · 散开 💨';
+    } else {
+      if (mouseGesture==='fist'||mouseGesture==='heart') hintEl.innerHTML='<span class="icon">🖱️</span>按住 · 爱心 ❤️';
+      else if (mouseGesture==='peace') hintEl.innerHTML='<span class="icon">🖱️</span>右键/双指 · 早安 📝';
+      else hintEl.innerHTML='<span class="icon">🖱️</span>松开 · 散开 💨';
+    }
+  } else hintEl.innerHTML='<span class="icon">🎮</span>手动模式';
+
+  renderer.render(scene, camera);
+}
+
+// ==================== 控制面板 ====================
+shapeSel.addEventListener('change', () => {
+  if (shapeSel.value !== 'auto') tgtShape = shapeSel.value;
+});
+colorPick.addEventListener('input', () => {
+  pColor = colorPick.value; mat.color.set(pColor);
+  mat.map = glowTex(pColor); mat.needsUpdate = true;
+});
+cntRng.addEventListener('input', () => {
+  N = parseInt(cntRng.value); cntLab.textContent = N;
+  buildShapes(N);
+  pos = new Float32Array(N*3); col = new Float32Array(N*3); vel = new Float32Array(N*3);
+  for (let i=0; i<N; i++) {
+    const p = scatterPts[i%scatterPts.length];
+    pos[i*3]=p[0]; pos[i*3+1]=p[1]; pos[i*3+2]=p[2];
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  curShape='scatter'; tgtShape=shapeSel.value==='auto'?'scatter':shapeSel.value; trans=0;
+});
+document.getElementById('resetBtn').addEventListener('click', () => {
+  pColor='#ff4081'; colorPick.value='#ff4081'; mat.color.set('#ff4081'); mat.map=glowTex('#ff4081');
+  cntRng.value=3000; cntLab.textContent='3000'; N=3000; buildShapes(3000);
+  pos=new Float32Array(9000); col=new Float32Array(9000); vel=new Float32Array(9000);
+  for (let i=0;i<3000;i++){const p=scatterPts[i%scatterPts.length];pos[i*3]=p[0];pos[i*3+1]=p[1];pos[i*3+2]=p[2];}
+  geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  geo.setAttribute('color',new THREE.BufferAttribute(col,3));
+  curShape='scatter';tgtShape='scatter';trans=0;shapeSel.value='auto';
+});
+window.addEventListener('resize', () => {
+  camera.aspect=W()/H(); camera.updateProjectionMatrix(); renderer.setSize(W(),H());
+});
+
+// 启动
+for (let i=0;i<N;i++){const p=scatterPts[i%scatterPts.length];pos[i*3]=p[0]+(Math.random()-.5)*4;pos[i*3+1]=p[1]+(Math.random()-.5)*4;pos[i*3+2]=p[2]+(Math.random()-.5)*4;}
+geo.attributes.position.needsUpdate=true;
+requestAnimationFrame(animate);
+</script>
+</body>
+</html>

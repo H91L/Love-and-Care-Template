@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>温馨提示</title>
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{
+    background:#f0f0f0; height:100vh; width:100vw; overflow:hidden;
+    font-family:'KaiTi','楷体','STKaiti','SimKai',serif;
+    cursor:pointer; -webkit-tap-highlight-color:transparent;
+  }
+  .card{
+    position:absolute; width:150px; height:40px;
+    border-radius:5px; font-size:14px; color:#333;
+    text-align:center; line-height:40px; white-space:nowrap;
+    box-shadow:1px 2px 6px rgba(0,0,0,0.18);
+    user-select:none; pointer-events:none;
+    will-change:left,top;
+    border-top:3px solid rgba(255,255,255,0.6);
+    opacity:0;
+  }
+  #info{
+    position:fixed; bottom:28px; left:50%; transform:translateX(-50%);
+    color:#999; font-size:13px; z-index:100; text-align:center;
+    opacity:0; transition:opacity 0.8s; letter-spacing:1px;
+  }
+  #info.show{opacity:1}
+</style>
+</head>
+<body>
+<div id="info">共 50 张暖心便签 · 汇聚成爱心</div>
+
+<script>
+// ================================================================
+// 严格参考「温馨提示弹窗100次源代码.py」popup_count=100
+// ================================================================
+
+// 消息 —— 与源代码完全一致
+const MESSAGES = [
+  "多喝水哦~","保持微笑呀","好好爱自己","保持好心情","愿你平安喜乐",
+  "一切都会好起来的","勇敢一点","你很棒","记得吃水果","金榜题名",
+  "你是独一无二的光","早点休息","所有烦恼都消失","梦想成真","少熬夜",
+  "天冷了 多穿衣服","今天过得开心嘛","万事如意",
+];
+
+// 颜色 —— 与源代码完全一致
+const COLORS = [
+  "pink","lightblue","lightgreen","yellow","lightcoral","lightgray",
+  "lavender","coral","bisque","aquamarine","plum","honeydew","mistyrose",
+  "oldlace","skyblue","lightpink","lightyellow",
+];
+
+const POPUP_COUNT = 50;          // 便签数量
+const CARD_W = 150;              // 统一卡片宽度
+const CARD_H = 40;               // 统一卡片高度
+
+// 爱心缩放 —— 与源代码 scale=20 逻辑一致，根据屏幕自适应
+const SCALE = Math.min(window.innerWidth, window.innerHeight) * 0.025;
+
+// ================================================================
+// 爱心算法 —— 与源代码 generate_heart_points 完全一致
+// ================================================================
+function heartX(t){ return 16*Math.pow(Math.sin(t),3) }
+function heartY(t){
+  return 13*Math.cos(t)-5*Math.cos(2*t)-2*Math.cos(3*t)-Math.cos(4*t)
+}
+
+function generateHeartPoints(num, scale){
+  const pts=[];
+  for(let i=0;i<num;i++){
+    const t=2*Math.PI*i/num;
+    pts.push({x:heartX(t)*scale, y:-heartY(t)*scale});  // y取反，与源代码一致
+  }
+  return pts;
+}
+
+function shuffle(arr){
+  for(let i=arr.length-1;i>0;i--){
+    const j=Math.floor(Math.random()*(i+1));
+    [arr[i],arr[j]]=[arr[j],arr[i]];
+  }
+}
+
+// ================================================================
+// 主程序
+// ================================================================
+const cx=window.innerWidth/2, cy=window.innerHeight/2;
+
+const heartPoints=generateHeartPoints(POPUP_COUNT, SCALE);
+// 不 shuffle，让爱心按顺序从各个方向逐步成形
+
+// 按到中心距离排序：内圈先出发，外圈后出发，形成"从中心绽放"效果
+heartPoints.forEach(pt=>{ pt.dist=Math.hypot(pt.x, pt.y); });
+heartPoints.sort((a,b)=>a.dist-b.dist);
+
+const notes=[];
+let completed=false;
+let arrivedCount=0;
+
+// 创建 100 张卡片 —— 全部从中心同一点出发
+heartPoints.forEach((pt,i)=>{
+  const el=document.createElement('div');
+  el.className='card';
+  el.textContent=MESSAGES[i%MESSAGES.length];
+  el.style.background=COLORS[i%COLORS.length];
+
+  // 起始位置：屏幕中心 + 微小随机散开（像一叠便签被弹开）
+  const sx=cx-CARD_W/2+(Math.random()-0.5)*30;
+  const sy=cy-CARD_H/2+(Math.random()-0.5)*20;
+
+  el.style.left=sx+'px';
+  el.style.top=sy+'px';
+  el.style.opacity='0';
+  document.body.appendChild(el);
+
+  // 目标位置 —— 爱心轮廓
+  const tx=cx+pt.x-CARD_W/2;
+  const ty=cy+pt.y-CARD_H/2;
+
+  notes.push({el, sx,sy, tx,ty, dist:pt.dist, startTime:null, done:false});
+});
+
+// ================================================================
+// 从中心向外逐个启动（内圈先飞，外圈后飞）
+// ================================================================
+const DURATION=1800;       // 每张卡片飞行时间 ms（1.8 秒，看清过程）
+const START_DELAY=12;      // 每张卡片间隔 ms
+
+notes.forEach((n,i)=>{
+  setTimeout(()=>{
+    n.el.style.opacity='1';
+    n.startTime=performance.now();
+  }, i*START_DELAY);
+});
+
+// ================================================================
+// 动画循环
+// ================================================================
+function animate(now){
+  let allDone=true;
+
+  notes.forEach(n=>{
+    if(n.done) return;
+    if(n.startTime===null){ allDone=false; return; }
+
+    const elapsed=now-n.startTime;
+    let progress=Math.min(1, elapsed/DURATION);
+
+    // ease-out：开始快（冲出），末尾慢（吸附到位）
+    const eased=1-Math.pow(1-progress,3);
+    n.el.style.left=(n.sx+(n.tx-n.sx)*eased)+'px';
+    n.el.style.top =(n.sy+(n.ty-n.sy)*eased)+'px';
+
+    if(progress>=1){
+      n.done=true;
+      arrivedCount++;
+      if(arrivedCount===POPUP_COUNT){
+        completed=true;
+        document.getElementById('info').classList.add('show');
+      }
+    }else{
+      allDone=false;
+    }
+  });
+
+  if(!completed || !allDone){
+    requestAnimationFrame(animate);
+  }
+}
+
+// 启动动画循环
+setTimeout(()=>{ requestAnimationFrame(animate); }, 80);
+
+// 点击退出（淡出）
+document.addEventListener('click',()=>{
+  document.body.style.opacity='0';
+  document.body.style.transition='opacity 0.4s';
+  setTimeout(()=>{ document.body.innerHTML=''; },500);
+});
+</script>
+</body>
+</html>
